@@ -85,6 +85,8 @@ export class Texture2DLoader implements IResourceLoader {
 
             if (fileInfo.file) {
                 url = AssetDb.inst.getSubAssetURL(url, task.uuid, fileInfo.file, fileInfo.ext, fileInfo.sign);
+                // 因为 getSubAssetURL 在IDE中会被重写，所以这里需要兜底处理
+                url = AssetDb.resolveCompressedTextureURL(url, fileInfo.file, fileInfo.sign);
                 ext = fileInfo.ext;
             }
 

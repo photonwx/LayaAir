@@ -140,18 +140,20 @@ export class AssetDb {
      * @param uuid The UUID of the base resource.
      * @param subAssetName The name of the sub-asset.
      * @param subAssetExt The file extension of the sub-asset.
+     * @param sign Optional custom sign used to resolve the real sub-asset URL.
      * @returns The URL for the sub-asset.
      * @zh 获取子资源的 URL。
      * @param url 基础资源的 URL。
      * @param uuid 基础资源的 UUID。
      * @param subAssetName 子资源的名称。
      * @param subAssetExt 子资源的文件扩展名。
+     * @param sign 可选的自定义标记，用于解析真实子资源 URL。
      * @returns 子资源的 URL。
      */
-    getSubAssetURL(url: string, uuid: string, subAssetName: string, subAssetExt: string, sign: string = null): string {
+    getSubAssetURL(url: string, uuid: string, subAssetName: string, subAssetExt: string, sign?: string): string {
         if (subAssetName) {
-            let _sign = sign ?? '@';
-            return `${Utils.replaceFileExtension(url, "")}${_sign}${subAssetName}.${subAssetExt}`;
+            url = `${Utils.replaceFileExtension(url, "")}@${subAssetName}.${subAssetExt}`;
+            return AssetDb.resolveCompressedTextureURL(url, subAssetName, sign);
         }
         else
             return url;
@@ -167,5 +169,29 @@ export class AssetDb {
      */
     getI18nSettingsURL(id: string): string {
         return this.i18nUrlMap[id];
+    }
+
+    /**
+     * @en Resolves the real compressed-texture URL from a default sub-asset URL when a compression sign is specified.
+     * @param url The default sub-asset URL.
+     * @param subAssetName The name of the sub-asset.
+     * @param sign The compression sign.
+     * @returns The resolved real URL.
+     * @zh 当指定压缩贴图标记时，根据默认子资源 URL 解析出真实请求 URL。
+     * @param url 默认子资源 URL。
+     * @param subAssetName 子资源名称。
+     * @param sign 压缩贴图标记。
+     * @returns 解析后的真实 URL。
+     */
+    static resolveCompressedTextureURL(url: string, subAssetName: string, sign: string): string {
+        if (!subAssetName || !sign || sign === "@")
+            return url;
+
+        const marker = `@${subAssetName}.`;
+        const markerIndex = url.indexOf(marker);
+        if (markerIndex === -1)
+            return url;
+
+        return url.substring(0, markerIndex) + `${sign}${subAssetName}.` + url.substring(markerIndex + marker.length);
     }
 }
