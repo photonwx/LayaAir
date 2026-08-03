@@ -268,6 +268,15 @@ export class InputManager {
         doc.addEventListener("keyup", ev => {
             inst.handleKeys(ev);
         }, true);
+
+        let win = Browser.window;
+        win.addEventListener("blur", () => {
+            inst._pressKeys.clear();
+        });
+    }
+
+    private clearPressedKeys(): void {
+        this._pressKeys.clear();
     }
 
     private clearPressedKeys(): void {
