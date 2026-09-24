@@ -435,7 +435,11 @@ export class List extends Box {
             } else {
                 this._scrollBar.setScroll(0, 0, 0);
             }
+            // setScroll 在滚动值不变时不会派发 CHANGE；changeCells 里 setContentSize 会把 scrollRect 清零。
+            // 虚拟列表会出现内容消失、手动滚动后又恢复的问题，这里主动同步视口。
+            this.onScrollBarChange();
         }
+        this.runCallLater(this.renderItems);
     }
 
     /**
@@ -795,7 +799,7 @@ export class List extends Box {
         let lineX = (this._isVertical ? this.repeatX : this.repeatY);
         //let lineY = (this._isVertical ? this.repeatY : this.repeatX);
         let pos = Math.floor(cellIndex / lineX) * this._cellSize;
-        this._isVertical ? cell._y = pos : cell.x = pos;
+        this._isVertical ? cell.y = pos : cell.x = pos;
     }
 
     /**
