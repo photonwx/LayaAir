@@ -59,7 +59,7 @@ export class Texture2DLoader implements IResourceLoader {
         let ext = task.ext;
         let url = task.url;
         if (meta) {
-            const RGBA = { format: TextureFormat.R8G8B8A8, file: null as string, ext: null as string };
+            const RGBA = { format: TextureFormat.R8G8B8A8, file: null as string, ext: null as string, sign: null as string };
             let fileInfo = RGBA;
 
             if (meta.platforms && meta.files) {
@@ -85,7 +85,9 @@ export class Texture2DLoader implements IResourceLoader {
             }
 
             if (fileInfo.file) {
-                url = AssetDb.inst.getSubAssetURL(url, task.uuid, fileInfo.file, fileInfo.ext);
+                url = AssetDb.inst.getSubAssetURL(url, task.uuid, fileInfo.file, fileInfo.ext, fileInfo.sign);
+                // 因为 getSubAssetURL 在IDE中会被重写，所以这里需要兜底处理
+                url = AssetDb.resolveCompressedTextureURL(url, fileInfo.file, fileInfo.sign);
                 ext = fileInfo.ext;
             }
 
