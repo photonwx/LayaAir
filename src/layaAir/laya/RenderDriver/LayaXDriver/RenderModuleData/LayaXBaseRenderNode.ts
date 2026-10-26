@@ -17,13 +17,15 @@ import { LayaXVolumetricGI } from "./LayaXVolumetricGI";
  * LayaX BaseRenderNode bridge.
  *
  * Implements `IBaseRenderNode` by delegating all property access to the native
- * `conchLayaXBaseRenderNode` object.  Rendering is driven by the Rust side;
+ * `conchLayaXBaseRenderNode` object.  Rendering is driven by the C++ side;
  * this class is a thin data-bridge.
  */
 export class LayaXBaseRenderNode implements IBaseRenderNode {
 
     /** @internal */
     _nativeObj: any;
+
+    private _readbackFlags: Uint32Array | null = null;
 
     /** @internal */
     renderelements: IRenderElement3D[];
@@ -38,7 +40,7 @@ export class LayaXBaseRenderNode implements IBaseRenderNode {
     private _transform: LayaXTransform3D;
     public get transform(): LayaXTransform3D { return this._transform; }
     public set transform(value: LayaXTransform3D) {
-        // frontFace / invertFrontFace 由 Rust 在写 WorldMat 时自算（对齐 RT），不再从 JS 推送。
+        // frontFace / invertFrontFace 由 C++ 在写 WorldMat 时自算（对齐 RT），不再从 JS 推送。
         this._nativeObj.setTransform(value ? value._nativeObj : null);
         this._transform = value;
     }
@@ -59,7 +61,7 @@ export class LayaXBaseRenderNode implements IBaseRenderNode {
     public get castShadow(): boolean { return this._nativeObj.castShadow; }
     public set castShadow(value: boolean) { this._nativeObj.castShadow = value; }
 
-    // invertFrontFace / worldParams.x 由 Rust 自算，不再提供 JS setter。
+    // invertFrontFace / worldParams.x 由 C++ 自算，不再提供 JS setter。
 
     public get receiveShadow(): boolean { return this._nativeObj.receiveShadow; }
     public set receiveShadow(value: boolean) { this._nativeObj.receiveShadow = value; }
@@ -67,7 +69,7 @@ export class LayaXBaseRenderNode implements IBaseRenderNode {
     public get enable(): boolean { return this._nativeObj.enable; }
     public set enable(value: boolean) { this._nativeObj.enable = value; }
 
-    public get renderbitFlag(): number { return this._nativeObj.renderbitFlag; }
+    public get renderbitFlag(): number { return this._readbackFlags ? this._readbackFlags[0] : this._nativeObj.renderbitFlag; }
     public set renderbitFlag(value: number) { this._nativeObj.renderbitFlag = value; }
 
     public get visibalRangeBit(): number { return this._nativeObj.visibalRangeBit; }
@@ -85,7 +87,7 @@ export class LayaXBaseRenderNode implements IBaseRenderNode {
     public get renderNodeType(): number { return this._nativeObj.renderNodeType; }
     public set renderNodeType(value: number) { this._nativeObj.renderNodeType = value; }
 
-    // LayaX：culling / AABB 在 Rust 侧自走 transform 同步那一套，native 不消费此 boundsChange flag
+    // LayaX：culling / AABB 在 C++ 侧自走 transform 同步那一套，native 不消费此 boundsChange flag
     // （与 ismoved 同理）。骨骼动画每帧由 AnimatorApplier 改写 rootBone local TRS、派发
     // TRANSFORM_CHANGED，驱动 BaseRender._onWorldMatNeedChange 每帧 `boundsChange = true`——
     // 若此处写 native 就是每帧每对象一次纯冗余 FFI（被误判成"对象移动"）。改为纯 TS 字段后该 setter
@@ -112,7 +114,7 @@ export class LayaXBaseRenderNode implements IBaseRenderNode {
     public get lightProbUpdateMark(): number { return this._nativeObj.lightProbUpdateMark; }
     public set lightProbUpdateMark(value: number) { this._nativeObj.lightProbUpdateMark = value; }
 
-    public get perCameraUpdate(): boolean { return this._nativeObj.perCameraUpdate; }
+    public get perCameraUpdate(): boolean { return this._readbackFlags ? this._readbackFlags[1] !== 0 : this._nativeObj.perCameraUpdate; }
     public set perCameraUpdate(value: boolean) { this._nativeObj.perCameraUpdate = value; }
 
     // ------------------------------------------------------------------
@@ -134,7 +136,7 @@ export class LayaXBaseRenderNode implements IBaseRenderNode {
     }
     public set bounds(value: Bounds) {
         this._bounds = value;
-        // TODO(Q13): LayaX bounds may not have _imp._nativeObj; adapt if Bounds wraps LayaXBounds
+        // The module factory supplies LayaXBounds through Bounds._imp.
         this._nativeObj._bounds = (value._imp as any)._nativeObj;
     }
 
@@ -241,10 +243,18 @@ export class LayaXBaseRenderNode implements IBaseRenderNode {
 
     private _caculateBoundingBoxbindFun: any;
     private _renderUpdatePrebindFun: any;
+    private _renderUpdatePreOwner: any;
+    private _renderUpdatePreFunction: any;
 
     set_renderUpdatePreCall(call: any, fun: any): void {
+        this._renderUpdatePreOwner = call;
+        this._renderUpdatePreFunction = fun;
         this._renderUpdatePrebindFun = fun.bind(call, RenderContext3D._instance._contextOBJ);
         this._nativeObj.setRenderUpdatePre(this._renderUpdatePrebindFun);
+    }
+
+    isRenderUpdatePreCall(call: any, fun: any): boolean {
+        return this._renderUpdatePreOwner === call && this._renderUpdatePreFunction === fun;
     }
 
     set_caculateBoundingBox(call: any, fun: any): void {
@@ -262,6 +272,10 @@ export class LayaXBaseRenderNode implements IBaseRenderNode {
 
     constructor() {
         this._getNativeObj();
+        if (this._nativeObj.bindReadbackFlags) {
+            const flags = new Uint32Array(2);
+            if (this._nativeObj.bindReadbackFlags(flags.buffer)) this._readbackFlags = flags;
+        }
         this._defaultBaseGeometryBounds = new Bounds();
         this.baseGeometryBounds = this._defaultBaseGeometryBounds;
         this.renderelements = [];
@@ -293,8 +307,7 @@ export class LayaXBaseRenderNode implements IBaseRenderNode {
     // ------------------------------------------------------------------
 
     setRenderelements(value: IRenderElement3D[]): void {
-        // TODO(Q13): In LayaX, rendering is Rust-driven. Determine whether we pass
-        // full native element objects or just handle IDs to the Rust RenderFeature.
+        // The C++ bridge extracts persistent render-element handles from these native wrappers.
         let tempArray: any[] = [];
         this.renderelements.length = 0;
         for (let i = 0; i < value.length; i++) {
@@ -317,7 +330,7 @@ export class LayaXBaseRenderNode implements IBaseRenderNode {
     /**
      * @internal
      * 将 lightmap 纹理和 define 设置到 per-object shaderData 上，
-     * Rust 侧通过 ShaderDataBlock 自动拾取。
+     * C++ 侧通过 ShaderDataBlock 自动拾取。
      */
     _applyLightMapParams(): void {
         let shaderValues = this._shaderData;

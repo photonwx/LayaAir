@@ -228,8 +228,13 @@ export class pxCollider implements ICollider {
      * @zh 销毁碰撞器并释放其资源。
      */
     destroy(): void {
-        this._pxActor.release();
+        if (this._destroyed) return;
         this._destroyed = true;
+        if (this._isSimulate) this._physicsManager.removeCollider(this);
+        this._shape?.removeFromActor(this);
+        pxCollider._ActorPool.delete(this._id);
+        this._pxActor?.release();
+        this._pxActor = null;
     }
     /**
      * @en Sets the collision group for this collider.
@@ -281,7 +286,7 @@ export class pxCollider implements ICollider {
                 flag = flag | partFlag.eNOTIFY_TOUCH_PERSISTS | partFlag.eNOTIFY_CONTACT_POINTS;
             }
             if (value == Event.COLLISION_STAY) {
-                flag = flag | partFlag.eNOTIFY_TOUCH_PERSISTS;
+                flag = flag | partFlag.eNOTIFY_TOUCH_PERSISTS | partFlag.eNOTIFY_CONTACT_POINTS;
             }
             if (value == Event.COLLISION_EXIT) {
                 flag = flag | partFlag.eNOTIFY_TOUCH_PERSISTS | partFlag.eNOTIFY_TOUCH_LOST;

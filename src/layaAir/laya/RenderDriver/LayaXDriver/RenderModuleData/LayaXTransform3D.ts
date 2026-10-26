@@ -15,10 +15,10 @@ const ALL_WORLD_FLAGS =
     Transform3D.TRANSFORM_WORLDSCALE;
 
 /**
- * LayaX Transform3D —— chunk 共享存储上的三端同源方案（world 计算回 JS）。
+ * LayaX Transform3D —— JS 与 C++ 共用 ECS chunk 存储（world 计算回 JS）。
  *
- * 存储模型（stable_row_chunk_design.md）：local TRS 唯一源 = ECS chunk 的
- * Transform 组件；WorldMat 组件由 Rust propagate 独家产出。本类是基类纯 TS
+ * 存储模型：local TRS 唯一源 = ECS chunk 的
+ * Transform 组件；WorldMat 组件由 C++ propagate 独家产出。本类是基类纯 TS
  * `Transform3D` 之上的薄壳：
  *   - JS 写 local：经本 slot 零拷贝视图**直写 chunk + 标 slot 脏位**，
  *     0 跨语言调用；视图不可用（native 页 + 沙箱/OHOS）则降级
@@ -36,7 +36,7 @@ const ALL_WORLD_FLAGS =
  *   - 路径③：两者都不可用 → 不绑定，写 local 走 C++ 推。
  *   失效协议：只有 VIEW_STALE 表示本实体 row moved，需要重绑；普通 epoch 变化只刷新快照。
  *
- * ⚠ 构造时序铁律（见 memory project_layax_transform_init_order）：基类 ctor 在 `super()`
+ * 构造时序：基类 ctor 在 `super()`
  * 期间调 `this._initProperty()`，子类字段初始化器在 `super()` 返回后才执行、会覆盖 `_initProperty`
  * 里赋的值。故①不重声明 `_localPosition` 等基类字段；②在 `_initProperty` 赋值的子类字段
  * （`_nativeFloat32Buffer`/`_nativeObj`）不能带 `= 初值`。
@@ -89,9 +89,11 @@ export class LayaXTransform3D extends Transform3D {
      * 结构事件(实体增删触发的 swap-remove、tick 内迁移)时变化,为它们在 90k 次/帧的
      * 热路径上逐访问查共享内存是付费错位;快检门把成本降为 2 次字段比较,同时保证:
      *   ① JS 帧中结构操作(useSkill 式特效增删)→ _structGen++ → 所有实例下次访问慢检一次;
-     *   ② Rust tick 内迁移 → 下一帧 Stat.loopCount 变化 → 每实例每帧至少慢检一次(帧界兜底)。
+     *   ② C++ tick 内迁移 → 下一帧 Stat.loopCount 变化 → 每实例每帧至少慢检一次(帧界兜底)。
      */
     private static _structGen: number = 1;
+    /** Any local write invalidates repeated world reads, including ancestor writes. */
+    private static _worldWriteEpoch: number = 1;
 
     /** 进程级一次性探测：external ArrayBuffer 可用 = true；沙箱/OHOS = false。 */
     private static _zeroCopyProbed: boolean = false;
@@ -160,6 +162,10 @@ export class LayaXTransform3D extends Transform3D {
     private _worldGenSum: number = -1;
     /** @internal 上次记录 _worldGenSum 时的结构代数(见 _worldNeedRefresh 碰撞防护) */
     private _worldGenStruct: number = -1;
+    private _worldGateFrame: number = -1;
+    private _worldGateWrite: number = -1;
+    private _worldGateNative: number = -1;
+    private _worldGateStruct: number = -1;
     /**
      * @internal 子树(不含自己)内 TRANSFORM_CHANGED 订阅者总数。写路径的事件派发只深入
      * `自身有监听 || _subtreeListenerTotal>0` 的分支(订阅剪枝)。与 _hasTransformChangedListener
@@ -224,7 +230,7 @@ export class LayaXTransform3D extends Transform3D {
     // ------------------------------------------------------------------
 
     /**
-     * 在 Rust ECS 创建 entity（chunk 行随 spawn 分配），随后绑定本 slot 的零拷贝视图。
+     * 在 C++ ECS 创建 entity（chunk 行随 spawn 分配），随后绑定本 slot 的零拷贝视图。
      * 创建前补足 JS 供页储备（§7.1）。
      */
     createEntity(): void {
@@ -253,7 +259,7 @@ export class LayaXTransform3D extends Transform3D {
         // world 矩阵脱离 chunk：换回独立堆并标脏，待下次入场景重算。
         this._worldMatrix.elements = new Float32Array(16);
         this._setTransformFlag(Transform3D.TRANSFORM_WORLDMATRIX, true);
-        this._writeGen++;
+        this._writeGen++; LayaXTransform3D._worldWriteEpoch++;
         // swap-remove 会搬第三方实体的行(INV-6):bump 代数,受影响实例下次访问经慢检发现 VIEW_STALE
         LayaXTransform3D._structGen++;
     }
@@ -363,7 +369,7 @@ export class LayaXTransform3D extends Transform3D {
     }
 
     /**
-     * Rust ECS entity 是否已创建且存活。
+     * C++ ECS entity 是否已创建且存活。
      */
     get isEntityValid(): boolean {
         return this._nativeObj.isEntityValid();
@@ -418,7 +424,7 @@ export class LayaXTransform3D extends Transform3D {
      * @internal Rebind only when this entity's row moved.
      * 快检门:VIEW_STALE/epoch 只随结构事件变化——同一(结构代数,帧号)内重复访问
      * 直接短路(2 次字段比较,无共享内存读)。结构事件两来源都会使门失效:
-     * JS 结构操作 → _structGen++(操作返回点语义);Rust tick 内迁移 → 下帧
+     * JS 结构操作 → _structGen++(操作返回点语义);C++ tick 内迁移 → 下帧
      * Stat.loopCount 变化(帧界兜底)。tick 与 JS 帧互斥(tick timing contract),
      * 帧中无 JS 结构操作时行不可能被搬,门短路是安全的。
      */
@@ -527,10 +533,25 @@ export class LayaXTransform3D extends Transform3D {
      * (直读快路径仍按 dirtyWord 三条件独立判断,在 super 之前)。返回是否发生变化。
      */
     private _worldNeedRefresh(): boolean {
+        const sharedEpoch = LayaXTransform3D._syncEpochView;
+        const nativeEpoch = sharedEpoch !== null ? sharedEpoch[0] : -1;
+        const writeEpoch = LayaXTransform3D._worldWriteEpoch;
+        const structure = LayaXTransform3D._structGen, frame = Stat.loopCount;
+        if (sharedEpoch !== null && this._worldGateFrame === frame
+            && this._worldGateWrite === writeEpoch && this._worldGateNative === nativeEpoch
+            && this._worldGateStruct === structure) return false;
         // 判据复合结构代数:重挂会换祖先链,新旧链 gen 和可能恰好碰撞(对拍器抓到
         // 23+96 == 26+93 的实例)。同一结构代内链形状固定且 sum 严格单调(写只增),
         // 不可能回撞;跨代(重挂/实体增删,低频)强制刷新一次,严格正确。
         const sum = this._chainGenSum();
+        // Keep the entry epochs: a pull or callback during traversal must miss
+        // this gate on the next read. Publish only after traversal completes.
+        if (sharedEpoch !== null) {
+            this._worldGateFrame = frame;
+            this._worldGateWrite = writeEpoch;
+            this._worldGateNative = nativeEpoch;
+            this._worldGateStruct = structure;
+        }
         if (sum === this._worldGenSum && this._worldGenStruct === LayaXTransform3D._structGen)
             return false;
         this._worldGenSum = sum;
@@ -553,7 +574,7 @@ export class LayaXTransform3D extends Transform3D {
     }
 
     /**
-     * 读 world 消除双算：flag 干净 → 直读 chunk WorldMat（Rust propagate 的产物，
+     * 读 world 消除双算：flag 干净 → 直读 chunk WorldMat（C++ propagate 的产物，
      * 容忍 1 帧），免去 JS 沿父链的矩阵乘；本帧写过 local（flag 脏）→ 回落基类
      * 自算，结果只落 JS 堆（propagate 仍是组件唯一写者）。
      */
@@ -603,7 +624,7 @@ export class LayaXTransform3D extends Transform3D {
         if (pending & LayaXTransform3D.SYNC_ROT) this._pullRot();
         if (pending & LayaXTransform3D.SYNC_SCALE) this._pullScale();
         this._flagU32[LayaXTransform3D.FLAG_SYNC_IDX] &= ~pending;
-        this._writeGen++; // C++ 写化入本节点写代数
+        this._writeGen++; LayaXTransform3D._worldWriteEpoch++; // C++ 写化入本节点写代数
         this._setTransformFlag(Transform3D.TRANSFORM_LOCALMATRIX, true);
         // 按分量选择性置脏(对拍器精化):与 WebGL 侧等效写的递归类型对齐——
         // 统一 _onWorldTransform() 全量置脏会改变 TRANSFORM_CHANGED 的边缘触发时刻
@@ -895,7 +916,7 @@ export class LayaXTransform3D extends Transform3D {
     // ---- local→自己 slot 落库（零拷贝直写 + 标自己 dirty bit；未绑定经 C++ 推）----
 
     private _pushLocalPos(): void {
-        this._writeGen++;
+        this._writeGen++; LayaXTransform3D._worldWriteEpoch++;
         this._checkViewStale();
         const lp = this._localPosition;
         if (this._viewsBound) {
@@ -910,7 +931,7 @@ export class LayaXTransform3D extends Transform3D {
     }
 
     private _pushLocalRot(): void {
-        this._writeGen++;
+        this._writeGen++; LayaXTransform3D._worldWriteEpoch++;
         this._checkViewStale();
         const lr = this.localRotation;    // 经基类 getter 懒求值，保证四元数最新（与 WebGL bit-exact）
         if (this._viewsBound) {
@@ -925,7 +946,7 @@ export class LayaXTransform3D extends Transform3D {
     }
 
     private _pushLocalScale(): void {
-        this._writeGen++;
+        this._writeGen++; LayaXTransform3D._worldWriteEpoch++;
         this._checkViewStale();
         const ls = this._localScale;
         if (this._viewsBound) {
@@ -940,7 +961,7 @@ export class LayaXTransform3D extends Transform3D {
     }
 
     // ------------------------------------------------------------------
-    // Hierarchy —— 父子链结构由基类维护，额外通知 Rust ECS（propagate 依赖 Parent 组件）
+    // Hierarchy —— 父子链结构由基类维护，额外通知 C++ ECS（propagate 依赖 Parent 组件）
     // ------------------------------------------------------------------
 
     /** @internal */
@@ -962,7 +983,7 @@ export class LayaXTransform3D extends Transform3D {
         }
         super._setParent(value);
         this._nativeObj.setParent(value ? (value as any)._nativeObj : null);
-        this._writeGen++; // 链形状变化,等价于一次写
+        this._writeGen++; LayaXTransform3D._worldWriteEpoch++; // 链形状变化,等价于一次写
         // setParent 触发 archetype 迁移(ffi 内 re-mark dirty),行可能搬家:bump 结构代数
         LayaXTransform3D._structGen++;
     }
