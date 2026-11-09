@@ -154,9 +154,9 @@ export class BlurEffect2D extends PostProcess2DEffect {
          RenderTexture2D.recoverToPool(this._destRT);
       }
       this._destRT = null;
-      this._mat.destroy();
+      this._mat && this._mat.destroy();
       this._mat = null;
-      this._renderElement?.destroy();
+      this._renderElement && this._renderElement.destroy();
       this._renderElement = null;
    }
 
