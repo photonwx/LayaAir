@@ -190,6 +190,7 @@ export class DrawMeshInstancedCMD extends Command {
 
                 element.transform = this._transform;
                 element.material = this._material;
+                element.renderSubShader = this._material.shader.getSubShaderAt(this._subShaderIndex);
                 element._subShaderIndex = this._subShaderIndex;
                 element.render = this._render;
                 element._renderElementOBJ.owner = this._render._baseRenderNode;
@@ -209,6 +210,8 @@ export class DrawMeshInstancedCMD extends Command {
 
             element.transform = this._transform;
             element.material = this._material;
+            element.renderSubShader = this._material.shader.getSubShaderAt(this._subShaderIndex);
+            element._subShaderIndex = this._subShaderIndex;
             element.render = this._render;
 
             element._renderElementOBJ.owner = this._render._baseRenderNode;
@@ -342,7 +345,7 @@ export class DrawMeshInstancedCMD extends Command {
             }
             this._drawElementCMDData.setRenderelements(arrayElement);
         } else {
-            let renderElement = this._instanceRenderElementArray[this._subMeshIndex];
+            let renderElement = this._instanceRenderElementArray[0];
             let renderObj = this.renderUpdateElement(renderElement, context);
             this._drawElementCMDData.setRenderelements([renderObj]);
         }
